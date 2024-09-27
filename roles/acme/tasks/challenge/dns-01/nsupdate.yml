@@ -1,0 +1,61 @@
+---
+# nsupdate
+- name: Validate challenge only if it is created or changed # noqa no-handler
+  when: acme_challenge is changed
+  block:
+    - name: Add a new TXT record for an ACME dns challenge
+      community.general.nsupdate:
+        key_name: "{{ acme_dns_user | default('nsupdate') }}"
+        key_secret: "{{ acme_dns_password }}"
+        server: "{{ item[1] }}"
+        type: "TXT"
+        zone: "{{ acme_domain['zone'] }}"
+        record: "{{ item[0]['challenge_data'][item[2]]['dns-01']['record'] }}"
+        value: "{{ item[0]['challenge_data'][item[2]]['dns-01']['resource_value'] }}"
+        ttl: 60
+        state: present
+      # Loop through all acme_dns_servers for every challenge
+      loop: "{{ acme_challenge | ansible.builtin.product(acme_dns_servers, acme_domain['subject_alt_name']) | default([]) }}"
+      when: acme_challenge['challenge_data'][item[2]] is defined
+
+    - name: Wait for TXT entries to be available on all nameservers we're updating
+      community.dns.wait_for_txt:
+        records:
+          - name: "{{ acme_challenge['challenge_data'][item]['dns-01']['record'] }}"
+            values: "{{ acme_challenge['challenge_data'][item]['dns-01']['resource_value'] }}"
+            mode: equals
+        server: "{{ acme_dns_servers }}"
+        timeout: 90
+
+    - name: Let the challenge be validated and retrieve the cert and intermediate certificate
+      community.crypto.acme_certificate:
+        account_key_src: "{{ acme_account_key_path }}"
+        account_email: "{{ acme_account_email }}"
+        csr: "{{ acme_csr_path }}"
+        cert: "{{ acme_cert_path }}"
+        fullchain: "{{ acme_fullchain_path }}"
+        chain: "{{ acme_intermediate_path }}"
+        challenge: dns-01
+        force: "{{ acme_force_renewal | default(false) }}"
+        acme_directory: "{{ acme_directory }}"
+        acme_version: 2
+        terms_agreed: true
+        remaining_days: "{{ acme_remaining_days }}"
+        data: "{{ acme_challenge }}"
+
+  always:
+    - name: Remove DNS records for the ACME dns challenge
+      community.general.nsupdate:
+        key_name: "{{ acme_dns_user | default('nsupdate') }}"
+        key_secret: "{{ acme_dns_password }}"
+        server: "{{ item[1] }}"
+        type: "TXT"
+        zone: "{{ acme_domain['zone'] }}"
+        record: "{{ item[0]['challenge_data'][item[2]]['dns-01']['record'] }}"
+        value: "{{ item[0]['challenge_data'][item[2]]['dns-01']['resource_value'] }}"
+        ttl: 60
+        state: absent
+      # Loop through all acme_dns_servers for every challenge
+      loop: "{{ acme_challenge | ansible.builtin.product(acme_dns_servers, acme_domain['subject_alt_name']) | default([]) }}"
+      # only runs if the challenge is run the first time, because then there is challenge_data
+      when: acme_challenge['challenge_data'][item[2]] is defined
